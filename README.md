@@ -8,6 +8,7 @@ it shows, so there's nothing to deploy.
 | --- | --- | --- |
 | [bin-day.js](bin-day.js) | *Bin Day* | Manchester's next bin collection, and which bins go out |
 | [toyota.js](toyota.js) | *Toyota* | Your car's charge or fuel, range, and whether it's locked |
+| [toyota-journeys.js](toyota-journeys.js) | *Toyota Journeys* | A bar per recent drive: how far, and how much of it was electric |
 | [toyota-endpoints.js](toyota-endpoints.js) | *Toyota Endpoints* | Not a widget: every Toyota endpoint's raw response, for poking at |
 | [xkcd.js](xkcd.js) | *Today's xkcd Comic* | The latest xkcd |
 
@@ -100,6 +101,23 @@ to log in again when Toyota's session lapses. To log in as someone else,
 remove both with `Keychain.remove(…)` and run it again. At the top of the
 script, `UNITS` is `mi` or `km`, and `VIN` picks a car if the account has
 more than one.
+
+## Toyota Journeys
+
+[toyota-journeys.js](toyota-journeys.js) charts your recent drives, a bar
+per journey with the latest on the right. A bar's height is how long the
+drive was, on a log scale so short drives still show next to long ones, green for the miles on electric and amber for the miles on petrol, so a
+plug-in hybrid charged at home has short all-green bars, and a long drive goes
+amber once the battery's run out. Toyota says how far of a drive was electric
+but not how much electricity it used, so there's no miles per kWh; the mpg
+under the chart is over all the miles, electric ones included, and shows as
+∞ from 500 mpg up.
+
+Small shows the last 8 journeys, medium 16 and large 24, from the last 30
+days. Under the chart are how much of them was electric and the mpg over
+all of them, and medium and large label each day under its first journey. It
+shares the Toyota widget's login, so if that's set up there's nothing to
+type in.
 
 ## xkcd
 
