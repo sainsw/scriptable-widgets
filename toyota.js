@@ -9,12 +9,17 @@
 //   1. Run the script once in Scriptable and log in with your MyToyota email
 //      and password. They're kept in the iOS Keychain, not in this file,
 //      and only used to log in again if Toyota's session lapses.
+//      Running it in the app also offers to save where the car's parked
+//      as home, so the widget says "Parked at home" rather than the street.
 //   2. Add a Scriptable widget, long-press it → Edit Widget → pick this script.
+//      Give it the parameter "trips" for the last drive and this month's
+//      driving instead of the charge.
 
 const UNITS = "mi" // "mi" or "km"
 const VIN = "" // which car, if the account has more than one; blank for the first
 const LOGIN_KEY = "toyota_widget_login"
 const TOKEN_KEY = "toyota_widget_tokens"
+const HOME_KEY = "toyota_widget_home"
 
 // The MyToyota app's own client details, as pytoyoda uses them.
 const AUTH = "https://b2c-login.toyota-europe.com"
@@ -231,13 +236,22 @@ async function loadOrCached() {
     const c = await car(fm, dir)
     // Plug-in hybrids (I) and electric cars (E) also report their battery.
     const plugs = c.ev || c.fuelType === "E" || c.fuelType === "I"
-    const [telemetry, status, electric] = await Promise.all([
+    // Trips from the start of the month, or the last 30 days if that's
+    // longer, so there's a last drive even early in the month. Only the
+    // latest trip is wanted; the month's totals come with it.
+    const now = new Date()
+    const from = new Date(Math.min(new Date(now.getFullYear(), now.getMonth(), 1), now - 30 * 86400e3))
+    const [telemetry, status, electric, location, trips] = await Promise.all([
       api("/v3/telemetry", c.vin).catch(() => null),
       api("/v1/vehicle/status", c.vin).catch(() => null),
       plugs ? api("/v1/vehicle/electric/status", c.vin).catch(() => null) : null,
+      api("/v1/location", c.vin).catch(() => null),
+      api(`/v1/trips?from=${ymd(from)}&to=${ymd(now)}&route=false&summary=true&limit=1&offset=0`, c.vin).catch(() => null),
     ])
     if (!telemetry && !status && !electric) throw new Error("Toyota sent nothing back for the car")
-    const d = { car: c, telemetry, status, electric, fetchedAt: Date.now() }
+    const kept = fm.fileExists(cache) ? JSON.parse(fm.readString(cache)) : null
+    const d = { car: c, telemetry, status, electric, location, trips, fetchedAt: Date.now() }
+    d.place = await place(d.location?.vehicleLocation, kept?.place)
     fm.writeString(cache, JSON.stringify(d))
     return { ...d, picture: picture(fm, dir) }
   } catch (e) {
@@ -257,6 +271,29 @@ function carName(c) {
 function picture(fm, dir) {
   const p = fm.joinPath(dir, "car.png")
   return fm.fileExists(p) ? fm.readImage(p) : null
+}
+
+const ymd = (t) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`
+
+// The street the car's parked on, looked up from where Toyota says it is.
+// Kept with the reports, and only looked up again once the car's moved.
+async function place(loc, kept) {
+  if (!loc) return null
+  if (kept && metres(kept, { lat: loc.latitude, lon: loc.longitude }) < 30) return kept
+  try {
+    const [p] = await Location.reverseGeocode(loc.latitude, loc.longitude, "en_GB")
+    return { lat: loc.latitude, lon: loc.longitude, street: p?.thoroughfare ?? null,
+             area: p?.subLocality ?? p?.locality ?? null }
+  } catch {
+    return kept ?? null
+  }
+}
+
+// Near enough for the distances here: how far apart two spots are, in metres.
+function metres(a, b) {
+  const rad = Math.PI / 180
+  const x = (b.lon - a.lon) * rad * Math.cos((a.lat + b.lat) / 2 * rad)
+  return Math.hypot(x, (b.lat - a.lat) * rad) * 6371e3
 }
 
 // ---------------------------------------------------------------------------
@@ -327,13 +364,70 @@ function security(d) {
 function reported(d) {
   const times = [d.telemetry?.timestamp, d.status?.lastUpdateTimestamp, d.electric?.lastUpdateTimestamp]
     .filter(Boolean).map((t) => new Date(t).getTime())
-  if (!times.length) return null
-  const t = new Date(Math.max(...times))
-  const today = t.toDateString() === new Date().toDateString()
-  return today
+  return times.length ? when(Math.max(...times)) : null
+}
+
+// A time as just the time today, or with the day before that.
+function when(time) {
+  const t = new Date(time)
+  return t.toDateString() === new Date().toDateString()
     ? t.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
     : t.toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })
 }
+
+// Where it's parked: home, when it's near the spot saved as home, or the
+// street. short is for the tiles, where "Parked" is already the label.
+function parked(d) {
+  const p = d.place
+  if (!p) return null
+  const home = saved(HOME_KEY)
+  const since = d.location?.vehicleLocation?.locationAcquisitionDatetime
+  if (home && metres(home, p) < 150) return { home: true, text: "Parked at home", short: "Home", since }
+  if (p.street) return { home: false, text: `Parked on ${p.street}`, short: p.street, since }
+  if (p.area) return { home: false, text: `Parked in ${p.area}`, short: p.area, since }
+  return null
+}
+
+// The last drive and this month's driving, from Toyota's trips: lengths
+// in metres, and fuel in millilitres. ev is the share driven on
+// electric, when the car says (hybrids do).
+function driving(d) {
+  const t = d.trips
+  if (!t) return null
+  const now = new Date(d.fetchedAt)
+  const trip = (s, hdc) => ({
+    distance: toUnits({ value: s.length / 1000, unit: "km" }),
+    ev: hdc && s.length ? Math.min(1, hdc.evDistance / s.length) : null,
+    economy: economy(s.length, s.fuelConsumption),
+  })
+  const last = t.trips?.[0]
+  const month = t.summary?.find((m) => m.year === now.getFullYear() && m.month === now.getMonth() + 1)
+  return {
+    monthName: now.toLocaleString("en-GB", { month: "long" }),
+    month: month ? trip(month.summary, month.hdc) : null,
+    last: last && {
+      ...trip(last.summary, last.hdc),
+      minutes: Math.round(last.summary.duration / 60),
+      ended: last.summary.endTs,
+      score: last.scores?.global ?? null,
+    },
+  }
+}
+
+// mpg in miles, litres per 100 km in kilometres; none for a drive that
+// used no fuel.
+function economy(m, ml) {
+  if (!ml || !m) return null
+  return UNITS === "mi" ? `${Math.round(m / 1609.344 / (ml / 4546.09))} mpg` : `${(ml / 1000 / (m / 100e3)).toFixed(1)} L/100km`
+}
+
+// 66% electric, or all of it.
+const electricShare = (ev, short) => ev == null ? null
+  : ev >= 0.995 ? (short ? "all EV" : "all electric")
+  : ev < 0.005 ? "no EV" : `${Math.round(ev * 100)}% ${short ? "EV" : "electric"}`
+
+// A drive's length: to a tenth under ten, since most drives are short.
+const tripDistance = (v) => v == null ? null : v < 10 ? `${v.toFixed(1)} ${UNITS}` : distance(v)
 
 const hm = (m) => m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`
 
@@ -343,10 +437,12 @@ const hm = (m) => m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2,
 // Widget sizes in points, which Scriptable doesn't give, from Apple's table
 // of them by the phone's screen width: the small's side, the medium's and
 // large's width, and the large's height. The nearest screen is used for
-// phones newer than the table.
+// phones newer than the table. The 402 point screen's widgets measure
+// 350 by 364 on the home screen, not the table's 344 by 366, so that's
+// what's here.
 const WIDGET = (() => {
   const sizes = [[440, 170, 364, 382], [430, 170, 364, 382], [428, 170, 364, 382], [414, 169, 360, 379],
-                 [402, 162, 344, 366], [393, 158, 338, 354], [390, 158, 338, 354], [375, 155, 329, 345],
+                 [402, 162, 350, 364], [393, 158, 338, 354], [390, 158, 338, 354], [375, 155, 329, 345],
                  [360, 155, 329, 345], [320, 141, 292, 311]]
   const { width, height } = Device.screenSize()
   const screen = Math.min(width, height)
@@ -362,6 +458,10 @@ const GREEN = dyn("#248A3D", "#30D158")
 const ORANGE = dyn("#C93400", "#FF9F0A")
 const RED = dyn("#D70015", "#FF453A")
 const TOYOTA = dyn("#EB0A1E", "#FF3B45")
+// Apple's system blue and a warm amber, for the small widget's lock and
+// house, coloured like the Apple Watch's own.
+const BLUE = dyn("#007AFF", "#0A84FF")
+const AMBER = dyn("#E8A200", "#FFC233")
 
 // Calm unless it matters: green while charging, orange when low, red when
 // nearly empty.
@@ -384,6 +484,8 @@ function levelColor(l) {
 // its system orange. Drawn images can't follow light and dark mode, so it's
 // the light mode versions, which read on both.
 const BAR_HEX = { battery: "#34C759", fuel: "#FF9500" }
+// A winding route, by its iOS 16 name and the older one.
+const ROUTE = ["point.topleft.down.to.point.bottomright.curvepath.fill", "point.topleft.down.curvedto.point.bottomright.up.fill", "car.fill"]
 
 function text(stack, value, font, color, scale = 0.6) {
   const t = stack.addText(value)
@@ -486,6 +588,48 @@ function bars(stack, l, width, height = 8) {
   }
 }
 
+// How much was electric: green for that share, orange for the rest, or
+// just the track when the car doesn't say.
+function splitBar(stack, ev, width, height) {
+  const ctx = new DrawContext()
+  ctx.size = new Size(width, height)
+  ctx.opaque = false
+  ctx.respectScreenScale = true
+  const pill = (color) => {
+    const p = new Path()
+    p.addRoundedRect(new Rect(0, 0, width, height), height / 2, height / 2)
+    ctx.addPath(p)
+    ctx.setFillColor(color)
+    ctx.fillPath()
+  }
+  // DrawContext can't clip, so the pill's drawn in the rest's colour and
+  // the electric share laid over it with only its left end rounded.
+  if (ev == null) pill(new Color("#8E8E93", 0.25))
+  else {
+    pill(new Color(BAR_HEX.fuel))
+    if (ev > 0) {
+      const w = Math.max(height, width * ev)
+      const p = new Path()
+      p.addRoundedRect(new Rect(0, 0, w, height), height / 2, height / 2)
+      if (ev < 1) p.addRect(new Rect(w - height / 2, 0, height / 2, height))
+      ctx.addPath(p)
+      ctx.setFillColor(new Color(BAR_HEX.battery))
+      ctx.fillPath()
+    }
+  }
+  const i = stack.addImage(ctx.getImage())
+  i.imageSize = new Size(width, height)
+}
+
+// Where it's parked, with a house when that's home.
+function placeLine(stack, where, size = 12) {
+  const r = stack.addStack()
+  r.centerAlignContent()
+  symbol(r, where.home ? "house.fill" : "mappin.and.ellipse", SECONDARY, size)
+  r.addSpacer(4)
+  text(r, where.text, Font.semiboldSystemFont(size), SECONDARY, 0.7)
+}
+
 function lockLine(stack, sec, size = 12) {
   if (!sec) return
   const r = stack.addStack()
@@ -499,7 +643,7 @@ function lockLine(stack, sec, size = 12) {
 }
 
 // The car's name, or the warning in its place, and when it last reported.
-function header(stack, d, time) {
+function header(stack, d, time, icon = "car.fill") {
   const r = stack.addStack()
   r.centerAlignContent()
   if (d.warning) {
@@ -507,7 +651,7 @@ function header(stack, d, time) {
     r.addSpacer(4)
     text(r, d.warning, Font.semiboldSystemFont(12), ORANGE, 0.7)
   } else {
-    symbol(r, "car.fill", TOYOTA, 12)
+    symbol(r, icon, TOYOTA, 12)
     r.addSpacer(5)
     text(r, carName(d.car), Font.semiboldSystemFont(13), TOYOTA, 0.7)
   }
@@ -527,7 +671,7 @@ function addPicture(stack, d, width, height) {
   i.applyFittingContentMode()
 }
 
-function build(d, family) {
+function build(d, family, mode) {
   const l = level(d)
   const sec = security(d)
   const time = reported(d)
@@ -597,21 +741,36 @@ function build(d, family) {
 
   w.backgroundColor = BG
 
+  if (mode === "trips" && family !== "large") return trips(w, d, family)
+
+  const where = parked(d)
   if (family === "small" || !family) {
     w.setPadding(12, 14, 12, 14)
     const top = w.addStack()
     top.centerAlignContent()
-    addPicture(top, d, WIDGET.small - 50, 52)
+    // At home that's just a house by the lock; anywhere else it's the
+    // street on a line of its own, with a smaller car to make room.
+    const home = where?.home
+    const street = where && !home
+    addPicture(top, d, WIDGET.small - (home ? 74 : 50), street ? 40 : 52)
     top.addSpacer()
+    if (home) {
+      symbol(top, "house.fill", AMBER, 14)
+      top.addSpacer(6)
+    }
     if (d.warning) symbol(top, "exclamationmark.triangle.fill", ORANGE, 14)
     else if (sec) symbol(top, sec.locked === false ? "lock.open.fill" : "lock.fill",
-                         sec.locked === false || sec.open.length ? ORANGE : SECONDARY, 14)
+                         sec.locked === false || sec.open.length ? ORANGE : BLUE, 14)
     w.addSpacer()
     headline(w, l, l.fuel ? 28 : 30)
     w.addSpacer(4)
     bars(w, l, WIDGET.small - 28, 6)
     w.addSpacer(5)
     text(w, subline(l), Font.semiboldSystemFont(12), l.charging ? GREEN : SECONDARY, 0.7)
+    if (street) {
+      w.addSpacer(2)
+      placeLine(w, where)
+    }
     return w
   }
 
@@ -620,32 +779,36 @@ function build(d, family) {
     // Everything but the picture has a set height, and the picture takes
     // what's left, so nothing's left over as gaps.
     const inner = WIDGET.width - 32
-    const pictureHeight = Math.max(60, WIDGET.large - (l.fuel ? 262 : 250))
+    const pictureHeight = Math.max(60, WIDGET.large - (l.fuel ? 251 : 239))
     w.setPadding(14, 16, 16, 16)
-    header(w, d, time)
+    // The mileage has no tile any more, so it's up by the time.
+    const odo = distance(toUnits(d.telemetry?.odometer))
+    header(w, d, [odo, time].filter(Boolean).join(" · "))
     w.addSpacer(4)
     const pic = w.addStack()
     pic.addSpacer()
-    addPicture(pic, d, inner, pictureHeight)
+    // Narrower than the widget by the spacers' own minimum widths: any
+    // wider and the whole widget's pushed off centre to fit it.
+    addPicture(pic, d, inner - 16, pictureHeight)
     pic.addSpacer()
     w.addSpacer(6)
     const row = w.addStack()
     row.bottomAlignContent()
     headline(row, l, 38)
     row.addSpacer()
-    // The range has its own tile here, so this just says what the level is of.
-    text(row, l.charging || l.total != null ? subline(l) : l.kind === "fuel" ? "Fuel" : "Battery", Font.semiboldSystemFont(13),
-         l.charging ? GREEN : SECONDARY, 0.7)
+    text(row, subline(l), Font.semiboldSystemFont(13), l.charging ? GREEN : SECONDARY, 0.7)
     w.addSpacer(6)
     bars(w, l, inner, 10)
     w.addSpacer(14)
-    const odo = distance(toUnits(d.telemetry?.odometer))
-    const fuel = l.fuel?.percent != null ? [`${l.fuel.percent}%`, distance(l.fuel.range)].filter(Boolean).join(" · ") : null
+    const drive = driving(d)
+    const locks = sec ? [sec.locked === false ? "Unlocked" : sec.locked ? "Locked" : null, sec.summary].filter(Boolean).join(" · ") : "–"
+    const last = drive?.last && [tripDistance(drive.last.distance), electricShare(drive.last.ev, true)].filter(Boolean).join(" · ")
+    const month = drive && [distance(drive.month?.distance ?? 0), electricShare(drive.month?.ev, true)].filter(Boolean).join(" · ")
     const tiles = [
-      [l.fuel ? "Electric range" : "Range", distance(l.range) ?? "–", null],
-      fuel ? ["Fuel", fuel, null] : ["Mileage", odo ?? "–", null],
-      ["Locks", sec?.locked === false ? "Unlocked" : sec?.locked ? "Locked" : "–", sec?.locked === false],
-      ["Doors & windows", sec?.summary ?? "–", sec?.open.length > 0],
+      ["Parked", where?.short ?? "–", false],
+      ["Locks", locks, sec?.locked === false || sec?.open.length > 0],
+      ["Last drive", last || "–", false],
+      [drive?.monthName ?? "This month", month || "–", false],
     ]
     for (let i = 0; i < tiles.length; i += 2) {
       if (i) w.addSpacer(8)
@@ -680,8 +843,73 @@ function build(d, family) {
   foot.centerAlignContent()
   lockLine(foot, sec)
   foot.addSpacer()
+  // Where it's parked, or the mileage when Toyota hasn't said.
   const odo = distance(toUnits(d.telemetry?.odometer))
-  if (odo) text(foot, odo, Font.semiboldSystemFont(12), SECONDARY)
+  if (where) placeLine(foot, where)
+  else if (odo) text(foot, odo, Font.semiboldSystemFont(12), SECONDARY)
+  return w
+}
+
+// The driving widget: the month's distance, with how much of it was
+// electric as a bar, and the last drive.
+function trips(w, d, family) {
+  const drive = driving(d)
+  const m = drive?.month, last = drive?.last
+  const monthName = drive?.monthName ?? new Date().toLocaleString("en-GB", { month: "long" })
+  const monthLine = m ? [electricShare(m.ev), m.economy].filter(Boolean).join(" · ") : "No drives yet"
+  const lastLine = last && [tripDistance(last.distance), `${last.minutes} min`, electricShare(last.ev, true)]
+    .filter(Boolean).join(" · ")
+  const small = Font.semiboldSystemFont(12)
+
+  if (family === "medium") {
+    w.setPadding(14, 16, 14, 16)
+    const where = parked(d)
+    header(w, d, where && (where.since ? `${where.short} since ${when(where.since)}` : where.short), ROUTE)
+    w.addSpacer()
+    const row = w.addStack()
+    const width = (WIDGET.width - 32 - 16) / 2
+    const column = () => {
+      const c = row.addStack()
+      c.layoutVertically()
+      c.size = new Size(width, 0)
+      return c
+    }
+    const a = column()
+    text(a, last ? `Last drive · ${when(last.ended)}` : "Last drive", small, SECONDARY)
+    text(a, tripDistance(last?.distance) ?? "–", Font.boldRoundedSystemFont(26))
+    if (last) {
+      text(a, [`${last.minutes} min`, electricShare(last.ev)].filter(Boolean).join(" · "), small, SECONDARY, 0.7)
+      if (last.score != null) text(a, `Score ${last.score}`, small, SECONDARY)
+    } else text(a, "None in 30 days", small, SECONDARY)
+    row.addSpacer(16)
+    const b = column()
+    text(b, monthName, small, SECONDARY)
+    text(b, distance(m?.distance ?? 0), Font.boldRoundedSystemFont(26))
+    b.addSpacer(4)
+    splitBar(b, m?.ev, width, 6)
+    b.addSpacer(5)
+    text(b, monthLine, small, SECONDARY, 0.7)
+    w.addSpacer()
+    return w
+  }
+
+  w.setPadding(12, 14, 12, 14)
+  const top = w.addStack()
+  top.centerAlignContent()
+  symbol(top, ROUTE, TOYOTA, 12)
+  top.addSpacer(5)
+  text(top, monthName, Font.semiboldSystemFont(13), TOYOTA, 0.7)
+  w.addSpacer()
+  text(w, distance(m?.distance ?? 0), Font.boldRoundedSystemFont(28), PRIMARY, 0.7)
+  w.addSpacer(4)
+  splitBar(w, m?.ev, WIDGET.small - 28, 6)
+  w.addSpacer(5)
+  text(w, monthLine, small, SECONDARY, 0.7)
+  if (last) {
+    w.addSpacer(8)
+    text(w, "Last drive", small, PRIMARY)
+    text(w, lastLine, small, SECONDARY, 0.7)
+  }
   return w
 }
 
@@ -689,14 +917,14 @@ function build(d, family) {
 function tile(stack, label, value, bad, width) {
   const t = stack.addStack()
   t.layoutVertically()
-  t.size = new Size(width, 52)
+  t.size = new Size(width, 56)
   t.backgroundColor = new Color("#8E8E93", 0.12)
   t.cornerRadius = 14
-  t.setPadding(10, 12, 10, 12)
+  t.setPadding(9, 12, 9, 12)
   text(t, label, Font.semiboldSystemFont(11), SECONDARY)
   t.addSpacer()
   const r = t.addStack()
-  text(r, value, Font.semiboldRoundedSystemFont(16), bad ? ORANGE : PRIMARY, 0.6)
+  text(r, value, Font.semiboldRoundedSystemFont(18), bad ? ORANGE : PRIMARY, 0.6)
   r.addSpacer()
 }
 
@@ -710,15 +938,47 @@ function failed(message) {
   return w
 }
 
-const FAMILY = config.widgetFamily ?? args.queryParameters.size ?? "medium"
-let widget
+let family = config.widgetFamily ?? args.queryParameters.size
+let mode = (args.widgetParameter ?? args.queryParameters.mode ?? "").trim().toLowerCase()
+let data, widget
 try {
-  widget = build(await loadOrCached(), FAMILY)
+  data = await loadOrCached()
 } catch (e) {
   widget = failed(e.message)
 }
+
+// Run in the app: pick which widget to look at, or save where the car's
+// parked as home.
+let show = true
+if (data && !config.runsInWidget && !family) {
+  const a = new Alert()
+  a.title = "Toyota"
+  const actions = []
+  const add = (title, run, destructive) => {
+    destructive ? a.addDestructiveAction(title) : a.addAction(title)
+    actions.push(run)
+  }
+  for (const [title, f, m] of [["Small", "small", ""], ["Medium", "medium", ""], ["Large", "large", ""],
+                               ["Small · driving", "small", "trips"], ["Medium · driving", "medium", "trips"]]) {
+    add(title, () => { family = f; mode = m })
+  }
+  if (data.place) {
+    add("Set home to where it's parked", () => {
+      save(HOME_KEY, { lat: data.place.lat, lon: data.place.lon })
+      family = "medium"
+    })
+  }
+  if (Keychain.contains(HOME_KEY)) add("Forget home", () => { Keychain.remove(HOME_KEY); family = "medium" }, true)
+  a.addCancelAction("Cancel")
+  const i = await a.presentSheet()
+  if (i === -1) show = false
+  else actions[i]()
+}
+
+family ??= "medium"
+widget ??= build(data, family, mode)
 if (config.runsInWidget) Script.setWidget(widget)
-else if (FAMILY === "small") await widget.presentSmall()
-else if (FAMILY === "large") await widget.presentLarge()
-else await widget.presentMedium()
+else if (show) {
+  await (family === "small" ? widget.presentSmall() : family === "large" ? widget.presentLarge() : widget.presentMedium())
+}
 Script.complete()

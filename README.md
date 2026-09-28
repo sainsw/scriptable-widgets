@@ -8,6 +8,7 @@ it shows, so there's nothing to deploy.
 | --- | --- | --- |
 | [bin-day.js](bin-day.js) | *Bin Day* | Manchester's next bin collection, and which bins go out |
 | [toyota.js](toyota.js) | *Toyota* | Your car's charge or fuel, range, and whether it's locked |
+| [toyota-endpoints.js](toyota-endpoints.js) | *Toyota Endpoints* | Not a widget: every Toyota endpoint's raw response, for poking at |
 | [xkcd.js](xkcd.js) | *Today's xkcd Comic* | The latest xkcd |
 
 ## Bin day
@@ -65,10 +66,20 @@ number is green while charging, orange at 20% and red at 10%.
 
 | Size | Shows |
 | --- | --- |
-| **Small** | The car, the level with its bars, range (or time left charging), and a lock |
-| **Medium** | Adds the car's name, when it last reported, the mileage, and *Locked · All shut* (orange when it's unlocked or something's open) |
-| **Large** | A bigger picture of the car and tiles for range, fuel or mileage, locks, and doors and windows |
+| **Small** | The car, the level with its bars, range (or time left charging), a lock, and where it's parked |
+| **Medium** | Adds the car's name, when it last reported, and *Locked · All shut* (orange when it's unlocked or something's open) |
+| **Large** | A bigger picture of the car, the mileage, and tiles for where it's parked, locks, the last drive, and the month so far |
 | **Lock screen** | A ring for the level (circular), the level with the lock state (rectangular), or one line |
+
+Where it's parked is the street, or *Parked at home* near the spot you've
+saved as home: run the script in Scriptable and pick *Set home to where it's
+parked* while the car's there (it's kept in the Keychain as
+`toyota_widget_home`). Running it in the app also previews each size.
+
+Give a small or medium widget the parameter `trips` (long-press → **Edit
+Widget** → **Parameter**) for driving instead: the month's distance with a
+bar for how much of it was electric, mpg (or L/100km), and the last drive,
+with medium adding Toyota's score for it and where the car's parked now.
 
 The time is when the car last reported, not when the widget last ran: a
 parked car doesn't report. Tapping it opens the MyToyota app, through the
