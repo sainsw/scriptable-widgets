@@ -429,7 +429,8 @@ const electricShare = (ev, short) => ev == null ? null
 // A drive's length: to a tenth under ten, since most drives are short.
 const tripDistance = (v) => v == null ? null : v < 10 ? `${v.toFixed(1)} ${UNITS}` : distance(v)
 
-const hm = (m) => m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`
+// 3h 05m, or just 3h on the hour.
+const hm = (m) => m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${String(m % 60).padStart(2, "0")}m` : ""}` : `${m}m`
 
 // ---------------------------------------------------------------------------
 // Drawing
