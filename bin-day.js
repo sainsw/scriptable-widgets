@@ -359,7 +359,7 @@ function build(data, family) {
     return widget
   }
 
-  widget.backgroundColor = BG
+  widget.backgroundColor = CLEAR ? Color.clear() : BG
 
   if (family === "small" || !family) {
     widget.setPadding(14, 14, 12, 14)
@@ -447,7 +447,7 @@ function build(data, family) {
 
 function failed(message) {
   const w = new ListWidget()
-  w.backgroundColor = BG
+  w.backgroundColor = CLEAR ? Color.clear() : BG
   const t = w.addText(`Bins: ${message}`)
   t.font = Font.systemFont(11)
   t.textColor = SECONDARY
@@ -455,6 +455,9 @@ function failed(message) {
   return w
 }
 
+// Give the widget the parameter "clear" to drop its background, for CarPlay,
+// where the system's own widgets sit straight on the wallpaper.
+const CLEAR = /\bclear\b/i.test(args.widgetParameter ?? "")
 const FAMILY = config.widgetFamily ?? args.queryParameters.size ?? "medium"
 let widget
 try {

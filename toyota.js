@@ -740,7 +740,7 @@ function build(d, family, mode) {
     return w
   }
 
-  w.backgroundColor = BG
+  w.backgroundColor = CLEAR ? Color.clear() : BG
 
   if (mode === "trips" && family !== "large") return trips(w, d, family)
 
@@ -931,7 +931,7 @@ function tile(stack, label, value, bad, width) {
 
 function failed(message) {
   const w = new ListWidget()
-  w.backgroundColor = BG
+  w.backgroundColor = CLEAR ? Color.clear() : BG
   const t = w.addText(`Toyota: ${message}`)
   t.font = Font.systemFont(11)
   t.textColor = SECONDARY
@@ -940,7 +940,12 @@ function failed(message) {
 }
 
 let family = config.widgetFamily ?? args.queryParameters.size
-let mode = (args.widgetParameter ?? args.queryParameters.mode ?? "").trim().toLowerCase()
+// The parameter is words: "trips" for driving, and "clear" to drop the
+// background, for CarPlay, where the system's own widgets sit straight on the
+// wallpaper. "trips clear" does both.
+const params = (args.widgetParameter ?? args.queryParameters.mode ?? "").toLowerCase().split(/[\s,]+/)
+const CLEAR = params.includes("clear")
+let mode = params.find((p) => p && p !== "clear") ?? ""
 let data, widget
 try {
   data = await loadOrCached()

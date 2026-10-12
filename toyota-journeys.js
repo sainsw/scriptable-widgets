@@ -468,7 +468,7 @@ function build(d, family) {
     return w
   }
 
-  w.backgroundColor = BG
+  w.backgroundColor = CLEAR ? Color.clear() : BG
   const small = family === "small"
   const [pt, ps] = small ? [12, 14] : [14, 16]
   w.setPadding(pt, ps, pt, ps)
@@ -497,7 +497,7 @@ function build(d, family) {
 
 function failed(message) {
   const w = new ListWidget()
-  w.backgroundColor = BG
+  w.backgroundColor = CLEAR ? Color.clear() : BG
   const t = w.addText(`Toyota: ${message}`)
   t.font = Font.systemFont(11)
   t.textColor = SECONDARY
@@ -505,6 +505,9 @@ function failed(message) {
   return w
 }
 
+// Give the widget the parameter "clear" to drop its background, for CarPlay,
+// where the system's own widgets sit straight on the wallpaper.
+const CLEAR = /\bclear\b/i.test(args.widgetParameter ?? "")
 let family = config.widgetFamily ?? args.queryParameters.size
 let data, widget
 try {

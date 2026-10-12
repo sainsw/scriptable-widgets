@@ -32,9 +32,12 @@ function fitToWidget(img) {
   return ctx.getImage()
 }
 
+// Give the widget the parameter "clear" to drop its background, for CarPlay,
+// where the system's own widgets sit straight on the wallpaper.
+const CLEAR = /\bclear\b/i.test(args.widgetParameter ?? "")
 const w = new ListWidget()
 // xkcd is drawn black on white, so it stays on white in dark mode too.
-w.backgroundColor = Color.white()
+w.backgroundColor = CLEAR ? Color.clear() : Color.white()
 w.setPadding(0, 0, 0, 0)
 w.url = `https://xkcd.com/${comic.num}/`
 // New comics come out on Mondays, Wednesdays and Fridays.

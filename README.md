@@ -12,6 +12,10 @@ it shows, so there's nothing to deploy.
 | [toyota-endpoints.js](toyota-endpoints.js) | *Toyota Endpoints* | Not a widget: every Toyota endpoint's raw response, for poking at |
 | [xkcd.js](xkcd.js) | *Today's xkcd Comic* | The latest xkcd |
 
+Give any of them the parameter `clear` (long-press → **Edit Widget** →
+**Parameter**) to drop its background, for CarPlay, where the system's own
+widgets sit straight on the wallpaper. Toyota takes `trips clear` for both.
+
 ## Bin day
 
 [bin-day.js](bin-day.js) shows Manchester City Council's next bin
