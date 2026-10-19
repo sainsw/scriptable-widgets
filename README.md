@@ -7,7 +7,7 @@ it shows, so there's nothing to deploy.
 | Script | In Scriptable | Shows |
 | --- | --- | --- |
 | [bin-day.js](bin-day.js) | *Bin Day* | Manchester's next bin collection, and which bins go out |
-| [toyota.js](toyota.js) | *Toyota* | Your car's charge or fuel, range, and whether it's locked |
+| [toyota.js](toyota.js) | *Toyota* | Your car's charge or fuel, range, whether it's locked, and when the tax or MOT is due |
 | [toyota-journeys.js](toyota-journeys.js) | *Toyota Journeys* | A bar per recent drive: how far, and how much of it was electric |
 | [toyota-endpoints.js](toyota-endpoints.js) | *Toyota Endpoints* | Not a widget: every Toyota endpoint's raw response, for poking at |
 | [xkcd.js](xkcd.js) | *Today's xkcd Comic* | The latest xkcd |
@@ -68,6 +68,14 @@ the car:
 
 The bars are Apple's system green for electric and orange for fuel. The
 number is green while charging, orange at 20% and red at 10%.
+
+When the tax or MOT is coming up, a capsule says so: the tax from 30 days
+before it's due, the MOT from the day it can be booked without moving its
+date (a month less a day before), orange in the last week or once it's run
+out. The dates are `TAX_DUE` and `MOT_DUE` at the top of the script: change
+them when either's renewed. On the small widget it takes the street's line,
+on the medium the place's spot, and the large has them under the bars; the
+lock screen widgets only show it in the last week.
 
 | Size | Shows |
 | --- | --- |

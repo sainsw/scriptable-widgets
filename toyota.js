@@ -20,6 +20,11 @@ const VIN = "" // which car, if the account has more than one; blank for the fir
 const LOGIN_KEY = "toyota_widget_login"
 const TOKEN_KEY = "toyota_widget_tokens"
 const HOME_KEY = "toyota_widget_home"
+// When the car's tax and MOT are due (YYYY-MM-DD), for a reminder on the
+// widget: the tax from 30 days before, the MOT once it can be booked.
+// Change them when either's renewed; blank for none.
+const TAX_DUE = "2027-01-01"
+const MOT_DUE = "2027-06-28"
 
 // The MyToyota app's own client details, as pytoyoda uses them.
 const AUTH = "https://b2c-login.toyota-europe.com"
@@ -488,6 +493,53 @@ const BAR_HEX = { battery: "#34C759", fuel: "#FF9500" }
 // A winding route, by its iOS 16 name and the older one.
 const ROUTE = ["point.topleft.down.to.point.bottomright.curvepath.fill", "point.topleft.down.curvedto.point.bottomright.up.fill", "car.fill"]
 
+// The tax and MOT when they're coming up, soonest first, as the wallboard's
+// car tile has them (its public/reminders.js): the tax from 30 days before
+// it's due, the MOT from the day it can first be booked, a month less a
+// day before it runs out (booking then keeps the date). Urgent in the last
+// week. act is the long wording, brief the small widget's.
+function reminders(now = new Date()) {
+  const dayOf = (v) => { const [y, m, d] = v.split("-").map(Number); return new Date(y, m - 1, d) }
+  const short = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const left = (d) => Math.round((d - today) / 86400e3)
+  const when = (n, d) => n < 0 ? `ran out ${short(d)}` : n === 0 ? "due today" : n === 1 ? "due tomorrow"
+    : n < 7 ? `due ${d.toLocaleDateString("en-GB", { weekday: "long" })}` : `due ${short(d)}`
+  const out = []
+  if (/^\d{4}-\d{2}-\d{2}$/.test(TAX_DUE)) {
+    const d = dayOf(TAX_DUE), n = left(d)
+    if (n <= 30) out.push({ days: n, act: `Tax ${when(n, d)}`, brief: n < 0 ? "Tax ran out" : `Tax ${n < 7 ? when(n, d).replace("due ", "") : short(d)}`,
+      tone: n < 7 ? "urgent" : "soon", symbol: n < 0 ? "exclamationmark.triangle.fill" : "sterlingsign.circle.fill" })
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(MOT_DUE)) {
+    const d = dayOf(MOT_DUE), n = left(d)
+    const last = new Date(d.getFullYear(), d.getMonth(), 0).getDate()
+    const bookable = new Date(d.getFullYear(), d.getMonth() - 1, Math.min(d.getDate(), last) + 1)
+    if (today >= bookable) out.push({ days: n, act: n < 7 ? `MOT ${when(n, d)}` : `Book the MOT · due ${short(d)}`,
+      brief: n < 0 ? "MOT ran out" : n < 7 ? `MOT ${when(n, d).replace("due ", "")}` : "Book the MOT",
+      tone: n < 7 ? "urgent" : "soon", symbol: n < 0 ? "exclamationmark.triangle.fill" : ["wrench.and.screwdriver.fill", "wrench.fill"] })
+  }
+  return out.sort((a, b) => a.days - b.days)
+}
+
+// A reminder as a capsule, coloured as the Bin Day widget's.
+const TONES = {
+  urgent: { fg: dyn("#C93400", "#FF9F0A"), bg: new Color("#FF9F0A", 0.18) },
+  soon: { fg: dyn("#4B3FC7", "#A5A0FF"), bg: new Color("#5E5CE6", 0.18) },
+}
+function capsule(stack, r, label = r.act, size = 12) {
+  const tone = TONES[r.tone]
+  const p = stack.addStack()
+  p.centerAlignContent()
+  p.backgroundColor = tone.bg
+  p.cornerRadius = 11
+  p.setPadding(4, 8, 4, 10)
+  symbol(p, r.symbol, tone.fg, size - 1)
+  p.addSpacer(5)
+  text(p, label, Font.semiboldSystemFont(size), tone.fg, 0.7)
+  return p
+}
+
 function text(stack, value, font, color, scale = 0.6) {
   const t = stack.addText(value)
   t.font = font
@@ -676,6 +728,8 @@ function build(d, family, mode) {
   const l = level(d)
   const sec = security(d)
   const time = reported(d)
+  const due = reminders()
+  const urgent = due.find((r) => r.tone === "urgent")
   const w = new ListWidget()
   w.url = APP_URL
   w.refreshAfterDate = new Date(Date.now() + 20 * 60e3)
@@ -686,7 +740,7 @@ function build(d, family, mode) {
   const range = distance(big.onFuel ? l.total ?? l.fuel?.range ?? l.range : l.total ?? l.range)
   if (family === "accessoryInline") {
     const icon = big.onFuel ? "⛽︎" : l.charging ? "⚡︎" : ""
-    w.addText([`${icon}${pct}`, range, sec && (sec.locked === false ? "Unlocked" : sec.open.length ? sec.summary : "Locked")]
+    w.addText([`${icon}${pct}`, range, urgent?.brief ?? (sec && (sec.locked === false ? "Unlocked" : sec.open.length ? sec.summary : "Locked"))]
       .filter(Boolean).join(" · "))
     return w
   }
@@ -736,7 +790,8 @@ function build(d, family, mode) {
     text(mid, pct, Font.boldRoundedSystemFont(20), Color.white())
     mid.addSpacer(6)
     text(mid, l.charging ? (l.left ? `⚡︎ ${hm(l.left)}` : "⚡︎ Charging") : range ?? "", Font.semiboldSystemFont(13), Color.white(), 0.7)
-    if (sec) text(w, `${sec.locked === false ? "Unlocked" : "Locked"} · ${sec.summary}`, Font.systemFont(12), Color.white(), 0.7)
+    if (urgent) text(w, urgent.act, Font.semiboldSystemFont(12), Color.white(), 0.7)
+    else if (sec) text(w, `${sec.locked === false ? "Unlocked" : "Locked"} · ${sec.summary}`, Font.systemFont(12), Color.white(), 0.7)
     return w
   }
 
@@ -768,7 +823,11 @@ function build(d, family, mode) {
     bars(w, l, WIDGET.small - 28, 6)
     w.addSpacer(5)
     text(w, subline(l), Font.semiboldSystemFont(12), l.charging ? GREEN : SECONDARY, 0.7)
-    if (street) {
+    // A reminder takes the street's line: there's no room for both.
+    if (due.length) {
+      w.addSpacer(5)
+      capsule(w, due[0], due[0].brief, 11)
+    } else if (street) {
       w.addSpacer(2)
       placeLine(w, where)
     }
@@ -780,7 +839,7 @@ function build(d, family, mode) {
     // Everything but the picture has a set height, and the picture takes
     // what's left, so nothing's left over as gaps.
     const inner = WIDGET.width - 32
-    const pictureHeight = Math.max(60, WIDGET.large - (l.fuel ? 251 : 239))
+    const pictureHeight = Math.max(60, WIDGET.large - (l.fuel ? 251 : 239) - (due.length ? 30 : 0))
     w.setPadding(14, 16, 16, 16)
     // The mileage has no tile any more, so it's up by the time.
     const odo = distance(toUnits(d.telemetry?.odometer))
@@ -800,6 +859,11 @@ function build(d, family, mode) {
     text(row, subline(l), Font.semiboldSystemFont(13), l.charging ? GREEN : SECONDARY, 0.7)
     w.addSpacer(6)
     bars(w, l, inner, 10)
+    if (due.length) {
+      w.addSpacer(10)
+      const r = w.addStack()
+      due.forEach((x, i) => { if (i) r.addSpacer(6); capsule(r, x) })
+    }
     w.addSpacer(14)
     const drive = driving(d)
     const locks = sec ? [sec.locked === false ? "Unlocked" : sec.locked ? "Locked" : null, sec.summary].filter(Boolean).join(" · ") : "–"
@@ -846,7 +910,9 @@ function build(d, family, mode) {
   foot.addSpacer()
   // Where it's parked, or the mileage when Toyota hasn't said.
   const odo = distance(toUnits(d.telemetry?.odometer))
-  if (where) placeLine(foot, where)
+  // A reminder takes the place's spot.
+  if (due.length) capsule(foot, due[0], due[0].tone === "urgent" ? due[0].act : due[0].brief, 11)
+  else if (where) placeLine(foot, where)
   else if (odo) text(foot, odo, Font.semiboldSystemFont(12), SECONDARY)
   return w
 }
